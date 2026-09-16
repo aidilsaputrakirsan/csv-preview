@@ -1,56 +1,54 @@
 <!DOCTYPE html>
-<html lang="id" data-theme="auto">
+<html lang="id">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>CSV Preview</title>
-<meta name="description" content="Pratinjau file CSV langsung di browser — tabel interaktif, statistik kolom, dan grafik. Tanpa upload ke server.">
-<meta name="theme-color" content="#0b1020">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<meta name="description" content="Pratinjau file CSV langsung di browser — tabel, statistik kolom, dan grafik. Tanpa upload ke server.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#faf9f6">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231b1a18'/><g fill='%23c2410c'><rect x='7' y='9' width='18' height='2.6'/><rect x='7' y='14.7' width='11' height='2.6'/><rect x='7' y='20.4' width='15' height='2.6'/></g></svg>">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">CSV</span>
-    <span class="brand-text">Preview</span>
-  </div>
-  <div class="topbar-actions">
-    <button id="btnNew" class="btn ghost hidden" type="button">Ganti file</button>
-    <button id="btnTheme" class="btn icon" type="button" title="Ganti tema" aria-label="Ganti tema">
-      <span data-theme-icon>◐</span>
-    </button>
-  </div>
+  <a class="brand" href="./">
+    <span class="brand-rule"></span>
+    <span class="brand-name">csv<em>preview</em></span>
+  </a>
+  <button id="btnNew" class="btn hidden" type="button">Ganti berkas</button>
 </header>
 
-<!-- ======================= LANDING / UPLOAD ======================= -->
+<!-- ======================= LANDING ======================= -->
 <main id="landing" class="landing">
-  <h1>Lihat isi file CSV kamu, seketika.</h1>
-  <p class="sub">Semua diproses di browser — file tidak pernah dikirim ke server mana pun.</p>
+  <p class="eyebrow">Berjalan di perangkatmu · berkas tidak dikirim ke mana pun</p>
+  <h1>Buka isi <em>CSV</em> tanpa spreadsheet.</h1>
+  <p class="lede">Jatuhkan satu berkas. Langsung dapat tabel yang bisa diurutkan, ringkasan tiap kolom,
+    dan grafik — bahkan untuk kolom catatan yang isinya panjang sekali.</p>
 
-  <div id="drop" class="dropzone" tabindex="0" role="button" aria-label="Pilih atau jatuhkan file CSV">
-    <div class="drop-icon">⬆</div>
-    <div class="drop-title">Jatuhkan file CSV di sini</div>
-    <div class="drop-sub">atau ketuk untuk memilih file · .csv .tsv .txt</div>
+  <div id="drop" class="dropzone" tabindex="0" role="button" aria-label="Pilih atau jatuhkan berkas CSV">
+    <span class="drop-line">Jatuhkan <b>.csv</b> di sini</span>
+    <span class="drop-sub">atau ketuk untuk memilih berkas · .csv .tsv .txt</span>
     <input id="file" type="file" accept=".csv,.tsv,.txt,text/csv" hidden>
   </div>
 
   <div class="landing-alt">
-    <button id="btnSample" class="btn ghost" type="button">Pakai data contoh</button>
-    <button id="btnPaste" class="btn ghost" type="button">Tempel teks CSV</button>
+    <button id="btnSample" class="link" type="button">Coba data contoh</button>
+    <span class="dot">·</span>
+    <button id="btnPaste" class="link" type="button">Tempel teks CSV</button>
   </div>
 
   <div id="pasteWrap" class="paste-wrap hidden">
     <textarea id="pasteArea" rows="6" spellcheck="false" placeholder="nama,kota,nilai&#10;Ani,Bandung,82"></textarea>
-    <button id="btnPasteGo" class="btn primary" type="button">Tampilkan</button>
+    <button id="btnPasteGo" class="btn solid" type="button">Tampilkan</button>
   </div>
 
-  <ul class="features">
-    <li><b>Tabel interaktif</b><span>Urutkan, cari, dan telusuri ribuan baris tanpa lag.</span></li>
-    <li><b>Statistik otomatis</b><span>Tipe data, nilai kosong, distribusi, min/maks/rata-rata.</span></li>
-    <li><b>Grafik instan</b><span>Pilih kolom, langsung jadi bar atau line chart.</span></li>
-    <li><b>Ramah HP</b><span>Di layar kecil tabel berubah jadi kartu yang mudah dibaca.</span></li>
-  </ul>
+  <ol class="features">
+    <li><b>Kolom panjang tetap rapi</b><span>Catatan bertele-tele dipangkas jadi dua baris; klik barisnya untuk membaca utuh.</span></li>
+    <li><b>Tipe terdeteksi sendiri</b><span>Angka, tanggal, dan teks — termasuk format <code>Rp 85.000</code> dan <code>1.234,56</code>.</span></li>
+    <li><b>Ringkasan tiap kolom</b><span>Berapa yang kosong, berapa nilai unik, sebaran, min–maks–rata-rata.</span></li>
+    <li><b>Enak dibaca di HP</b><span>Layar sempit: tabel berubah jadi kartu, tanpa geser ke samping.</span></li>
+  </ol>
 </main>
 
 <!-- ======================= APP ======================= -->
@@ -58,33 +56,34 @@
   <div class="filebar">
     <div class="filemeta">
       <strong id="fileName">data.csv</strong>
-      <span id="fileStats" class="muted"></span>
+      <span id="fileStats"></span>
     </div>
-    <div class="tabs" role="tablist">
+    <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="table" role="tab">Tabel</button>
       <button class="tab" data-tab="stats" role="tab">Kolom</button>
       <button class="tab" data-tab="chart" role="tab">Grafik</button>
-    </div>
+    </nav>
   </div>
 
-  <!-- TABLE -->
+  <!-- TABEL -->
   <div id="panel-table" class="panel">
     <div class="toolbar">
       <div class="search">
-        <span aria-hidden="true">🔎</span>
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <input id="search" type="search" placeholder="Cari di semua kolom…" autocomplete="off">
       </div>
       <div class="toolbar-right">
+        <button id="btnWrap" class="btn" type="button" aria-pressed="false" title="Tampilkan teks panjang seutuhnya">Teks penuh</button>
         <details class="menu">
-          <summary class="btn ghost">Kolom</summary>
+          <summary class="btn">Kolom</summary>
           <div id="colToggles" class="menu-body"></div>
         </details>
         <details class="menu">
-          <summary class="btn ghost">Unduh</summary>
+          <summary class="btn">Unduh</summary>
           <div class="menu-body">
             <button class="menu-item" data-export="csv" type="button">CSV (hasil filter)</button>
             <button class="menu-item" data-export="json" type="button">JSON (hasil filter)</button>
-            <button class="menu-item" data-export="copy" type="button">Salin ke clipboard</button>
+            <button class="menu-item" data-export="copy" type="button">Salin ke papan klip</button>
           </div>
         </details>
       </div>
@@ -96,22 +95,22 @@
         <tbody id="tbody"></tbody>
       </table>
       <div id="cards" class="cards"></div>
-      <div id="empty" class="empty hidden">Tidak ada baris yang cocok.</div>
+      <p id="empty" class="empty hidden">Tidak ada baris yang cocok.</p>
     </div>
 
     <div class="pager">
-      <span id="pageInfo" class="muted"></span>
+      <span id="pageInfo"></span>
       <div class="pager-btns">
-        <button id="prev" class="btn ghost" type="button">‹ Sebelumnya</button>
-        <button id="next" class="btn ghost" type="button">Berikutnya ›</button>
+        <button id="prev" class="btn" type="button">‹ Sebelumnya</button>
+        <button id="next" class="btn" type="button">Berikutnya ›</button>
       </div>
     </div>
   </div>
 
-  <!-- STATS -->
+  <!-- KOLOM -->
   <div id="panel-stats" class="panel hidden"><div id="statGrid" class="stat-grid"></div></div>
 
-  <!-- CHART -->
+  <!-- GRAFIK -->
   <div id="panel-chart" class="panel hidden">
     <div class="chart-controls">
       <label>Sumbu X <select id="chartX"></select></label>
@@ -123,7 +122,7 @@
         <option value="max">Maksimum</option>
         <option value="min">Minimum</option>
       </select></label>
-      <label>Tipe <select id="chartType">
+      <label>Bentuk <select id="chartType">
         <option value="bar">Bar</option>
         <option value="line">Line</option>
       </select></label>
@@ -132,9 +131,28 @@
   </div>
 </section>
 
-<footer class="foot">Diproses sepenuhnya di perangkat kamu · <a href="https://github.com/Myst-ADL/csv-preview">source</a></footer>
+<footer class="foot">Semua pemrosesan terjadi di browser · <a href="https://github.com/aidilsaputrakirsan/csv-preview">kode sumber</a></footer>
 
-<div id="toast" class="toast"></div>
+<!-- Detail satu baris: tempat kolom catatan panjang dibaca utuh -->
+<div id="sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="sheet-backdrop" data-close></div>
+  <article class="sheet-panel">
+    <header class="sheet-head">
+      <h2 id="sheetTitle">Baris</h2>
+      <div class="sheet-nav">
+        <button id="sheetPrev" class="btn tiny" type="button" title="Baris sebelumnya">↑</button>
+        <button id="sheetNext" class="btn tiny" type="button" title="Baris berikutnya">↓</button>
+        <button class="btn tiny" type="button" data-close title="Tutup">✕</button>
+      </div>
+    </header>
+    <dl id="sheetBody" class="sheet-body"></dl>
+    <footer class="sheet-foot">
+      <button id="sheetCopy" class="btn" type="button">Salin baris ini</button>
+    </footer>
+  </article>
+</div>
+
+<div id="toast" class="toast" role="status"></div>
 <script src="assets/app.js"></script>
 </body>
 </html>

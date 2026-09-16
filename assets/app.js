@@ -4,18 +4,22 @@
 
   const $ = (id) => document.getElementById(id);
   const PAGE_SIZE = 50;
+  const LONG_AVG = 70;   // rata-rata panjang teks yang dianggap "kolom catatan"
 
   const state = {
     name: '',
     headers: [],
     rows: [],          // array of arrays (string)
     types: [],         // 'number' | 'date' | 'text'
-    nums: [],          // array of arrays (number|null) sejajar dengan rows
+    long: [],          // boolean per kolom: teks panjang (catatan/deskripsi)
+    nums: [],          // array of arrays (number|null), sejajar dengan rows
     hidden: new Set(),
     view: [],          // indeks baris hasil filter+sort
     sort: { col: -1, dir: 1 },
     query: '',
     page: 0,
+    wrap: false,       // mode "Teks penuh"
+    sheetAt: -1,       // posisi baris yang dibuka di panel detail (indeks dalam view)
   };
 
   /* ===================== CSV parsing ===================== */
@@ -24,11 +28,10 @@
     const cands = [',', ';', '\t', '|'];
     let best = ',', bestScore = -1;
     for (const d of cands) {
-      // hitung konsistensi jumlah kolom pada beberapa baris pertama
       const rows = parseCSV(sample, d).slice(0, 20);
       if (!rows.length) continue;
-      const counts = rows.map((r) => r.length);
-      const mode = counts.sort((a, b) => a - b)[Math.floor(counts.length / 2)];
+      const counts = rows.map((r) => r.length).sort((a, b) => a - b);
+      const mode = counts[Math.floor(counts.length / 2)];
       if (mode < 2) continue;
       const consistent = counts.filter((c) => c === mode).length / counts.length;
       const score = mode * consistent;
@@ -37,7 +40,7 @@
     return best;
   }
 
-  /** Parser RFC4180: mendukung tanda kutip, kutip ganda di dalam field, dan newline dalam field. */
+  /** Parser RFC 4180: mendukung tanda kutip, kutip ganda dalam field, dan newline dalam field. */
   function parseCSV(text, delim) {
     const rows = [];
     let row = [], field = '', quoted = false, i = 0;
@@ -61,7 +64,7 @@
     return rows;
   }
 
-  /* ===================== type inference ===================== */
+  /* ===================== inferensi tipe ===================== */
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$|^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/;
 
@@ -90,33 +93,38 @@
   function inferTypes() {
     const { headers, rows } = state;
     state.types = headers.map(() => 'text');
+    state.long = headers.map(() => false);
     state.nums = rows.map(() => new Array(headers.length).fill(null));
 
     for (let c = 0; c < headers.length; c++) {
-      let filled = 0, numeric = 0, dates = 0;
+      let filled = 0, numeric = 0, dates = 0, chars = 0, longest = 0;
       const limit = Math.min(rows.length, 500);
       for (let r = 0; r < limit; r++) {
         const v = (rows[r][c] ?? '').trim();
         if (!v) continue;
         filled++;
+        chars += v.length;
+        if (v.length > longest) longest = v.length;
         if (toNumber(v) !== null) numeric++;
         else if (DATE_RE.test(v)) dates++;
       }
       if (filled && numeric / filled >= 0.85) state.types[c] = 'number';
       else if (filled && dates / filled >= 0.85) state.types[c] = 'date';
+      else if (filled && (chars / filled > LONG_AVG || longest > 160)) state.long[c] = true;
+
       if (state.types[c] === 'number') {
         for (let r = 0; r < rows.length; r++) state.nums[r][c] = toNumber(rows[r][c]);
       }
     }
   }
 
-  /* ===================== load ===================== */
+  /* ===================== muat data ===================== */
 
   function load(text, name) {
     text = text.replace(/^﻿/, '');
     const delim = detectDelimiter(text.slice(0, 64 * 1024));
     let rows = parseCSV(text, delim).filter((r) => r.length > 1 || (r[0] ?? '').trim() !== '');
-    if (!rows.length) return toast('File kosong atau tidak bisa dibaca.');
+    if (!rows.length) return toast('Berkas kosong atau tidak bisa dibaca.');
 
     const headers = rows[0].map((h, i) => (h || '').trim() || `Kolom ${i + 1}`);
     rows = rows.slice(1);
@@ -124,7 +132,7 @@
     for (const r of rows) { while (r.length < width) r.push(''); if (r.length > width) r.length = width; }
 
     Object.assign(state, {
-      name, headers, rows, hidden: new Set(), sort: { col: -1, dir: 1 }, query: '', page: 0,
+      name, headers, rows, hidden: new Set(), sort: { col: -1, dir: 1 }, query: '', page: 0, sheetAt: -1,
     });
     inferTypes();
 
@@ -145,12 +153,14 @@
   function readFile(file) {
     if (!file) return;
     const reader = new FileReader();
-    reader.onerror = () => toast('Gagal membaca file.');
+    reader.onerror = () => toast('Gagal membaca berkas.');
     reader.onload = () => load(String(reader.result), file.name);
     reader.readAsText(file, 'utf-8');
   }
 
-  /* ===================== filter + sort ===================== */
+  /* ===================== filter + urut ===================== */
+
+  const visibleCols = () => state.headers.map((_, i) => i).filter((i) => !state.hidden.has(i));
 
   function applyFilter() {
     const q = state.query.trim().toLowerCase();
@@ -186,9 +196,7 @@
     renderTable();
   }
 
-  const visibleCols = () => state.headers.map((_, i) => i).filter((i) => !state.hidden.has(i));
-
-  /* ===================== render: table ===================== */
+  /* ===================== render: tabel ===================== */
 
   function renderTable() {
     const cols = visibleCols();
@@ -196,21 +204,20 @@
     const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     const start = state.page * PAGE_SIZE;
     const slice = state.view.slice(start, start + PAGE_SIZE);
+    const q = state.query.trim();
 
-    // header
-    const thead = $('thead');
-    thead.innerHTML = '';
+    // --- kepala tabel
     const tr = document.createElement('tr');
     for (const c of cols) {
       const th = document.createElement('th');
       const sorted = state.sort.col === c;
-      if (sorted) th.className = 'sorted';
+      th.className = (sorted ? 'sorted ' : '') + (state.long[c] ? 'col-long' : '');
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.innerHTML =
         `<span>${esc(state.headers[c])}</span>` +
         `<span class="th-type">${state.types[c] === 'number' ? '123' : state.types[c] === 'date' ? 'tgl' : 'abc'}</span>` +
-        `<span class="sort-ind">${sorted ? (state.sort.dir === 1 ? '▲' : '▼') : '↕'}</span>`;
+        `<span class="sort-ind">${sorted ? (state.sort.dir === 1 ? '▲' : '▼') : '◆'}</span>`;
       btn.addEventListener('click', () => {
         if (state.sort.col === c) state.sort.dir = state.sort.dir === 1 ? -1 : 1;
         else state.sort = { col: c, dir: 1 };
@@ -219,31 +226,38 @@
       th.appendChild(btn);
       tr.appendChild(th);
     }
-    thead.appendChild(tr);
+    $('thead').replaceChildren(tr);
 
-    // body (desktop) + cards (mobile) — dibangun sekaligus, CSS memilih yang tampil
-    const tbody = $('tbody'), cards = $('cards');
+    // --- badan tabel (desktop) + kartu (layar sempit); CSS memilih yang tampil
     const tFrag = document.createDocumentFragment(), cFrag = document.createDocumentFragment();
-    const q = state.query.trim();
 
-    for (const r of slice) {
+    slice.forEach((r, k) => {
       const row = state.rows[r];
+      const at = start + k;
       const tr2 = document.createElement('tr');
+      tr2.addEventListener('click', () => openSheet(at));
+
       const card = document.createElement('div');
       card.className = 'card';
+      card.addEventListener('click', () => openSheet(at));
       const idx = document.createElement('div');
       idx.className = 'card-idx';
       idx.textContent = `BARIS ${fmtInt(r + 2)}`;
       card.appendChild(idx);
+      let cardHasLong = false;
 
       for (const c of cols) {
         const raw = row[c] ?? '';
         const isNum = state.types[c] === 'number' && state.nums[r][c] !== null;
+        const isLong = state.long[c];
+        if (isLong && raw) cardHasLong = true;
+
         const td = document.createElement('td');
-        if (isNum) td.className = 'num';
-        else if (!raw) td.className = 'empty-cell';
-        td.title = raw;
-        td.innerHTML = raw ? highlight(raw, q) : '—';
+        td.className = [isNum ? 'num' : '', isLong ? 'long col-long' : '', raw ? '' : 'nil'].filter(Boolean).join(' ');
+        if (!isLong) td.title = raw;
+        td.innerHTML = raw
+          ? (isLong ? `<span class="clamp">${highlight(raw, q)}</span>` : highlight(raw, q))
+          : '—';
         tr2.appendChild(td);
 
         const dl = document.createElement('dl');
@@ -251,38 +265,93 @@
         const dt = document.createElement('dt');
         dt.textContent = state.headers[c];
         const dd = document.createElement('dd');
-        if (isNum) dd.className = 'num';
-        dd.innerHTML = raw ? highlight(raw, q) : '<span class="muted">—</span>';
+        dd.className = [isNum ? 'num' : '', isLong ? 'long' : '', raw ? '' : 'nil'].filter(Boolean).join(' ');
+        dd.innerHTML = raw ? highlight(raw, q) : '—';
         dl.append(dt, dd);
         card.appendChild(dl);
       }
+      if (cardHasLong) {
+        const more = document.createElement('div');
+        more.className = 'card-more';
+        more.textContent = 'Baca selengkapnya →';
+        card.appendChild(more);
+      }
       tFrag.appendChild(tr2);
       cFrag.appendChild(card);
-    }
-    tbody.replaceChildren(tFrag);
-    cards.replaceChildren(cFrag);
+    });
+
+    $('tbody').replaceChildren(tFrag);
+    $('cards').replaceChildren(cFrag);
 
     $('empty').classList.toggle('hidden', total > 0);
     $('pageInfo').textContent = total
       ? `${fmtInt(start + 1)}–${fmtInt(Math.min(start + PAGE_SIZE, total))} dari ${fmtInt(total)} baris` +
-        (state.query ? ` (difilter dari ${fmtInt(state.rows.length)})` : '')
+        (state.query ? ` · disaring dari ${fmtInt(state.rows.length)}` : '')
       : '0 baris';
     $('prev').disabled = state.page === 0;
     $('next').disabled = state.page >= pages - 1;
   }
 
+  const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (m) => ESC_MAP[m]);
+
+  /** Menandai semua kemunculan kata kunci (aman: cocokkan pada teks mentah, escape per potongan). */
   function highlight(text, q) {
-    const s = esc(text);
-    if (!q) return s;
-    const i = s.toLowerCase().indexOf(esc(q).toLowerCase());
-    if (i < 0) return s;
-    const len = esc(q).length;
-    return s.slice(0, i) + '<mark>' + s.slice(i, i + len) + '</mark>' + s.slice(i + len);
+    if (!q) return esc(text);
+    const hay = text.toLowerCase(), needle = q.toLowerCase();
+    let out = '', from = 0, i = hay.indexOf(needle);
+    if (i < 0) return esc(text);
+    while (i > -1) {
+      out += esc(text.slice(from, i)) + '<mark>' + esc(text.slice(i, i + q.length)) + '</mark>';
+      from = i + q.length;
+      i = hay.indexOf(needle, from);
+    }
+    return out + esc(text.slice(from));
   }
 
-  const esc = (s) => String(s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+  /* ===================== panel detail baris ===================== */
 
-  /* ===================== render: stats ===================== */
+  function openSheet(at) {
+    if (at < 0 || at >= state.view.length) return;
+    state.sheetAt = at;
+    const r = state.view[at];
+    const row = state.rows[r];
+    $('sheetTitle').textContent = `Baris ${fmtInt(r + 2)} · ${fmtInt(at + 1)} dari ${fmtInt(state.view.length)}`;
+
+    const frag = document.createDocumentFragment();
+    for (const c of visibleCols()) {
+      const raw = row[c] ?? '';
+      const dt = document.createElement('dt');
+      dt.textContent = state.headers[c];
+      const dd = document.createElement('dd');
+      const isNum = state.types[c] === 'number' && state.nums[r][c] !== null;
+      dd.className = raw ? (isNum ? 'num' : '') : 'nil';
+      dd.innerHTML = raw ? highlight(raw, state.query.trim()) : 'kosong';
+      frag.append(dt, dd);
+    }
+    $('sheetBody').replaceChildren(frag);
+    $('sheetBody').scrollTop = 0;
+    $('sheetPrev').disabled = at === 0;
+    $('sheetNext').disabled = at >= state.view.length - 1;
+    $('sheet').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeSheet() {
+    $('sheet').classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  function moveSheet(step) {
+    const next = state.sheetAt + step;
+    if (next < 0 || next >= state.view.length) return;
+    // ikut pindah halaman kalau perlu, supaya tabel di belakang tetap sinkron
+    const page = Math.floor(next / PAGE_SIZE);
+    if (page !== state.page) { state.page = page; renderTable(); }
+    openSheet(next);
+  }
+
+  /* ===================== render: kolom ===================== */
 
   function renderStats() {
     const grid = $('statGrid');
@@ -295,13 +364,12 @@
       const missing = values.length - filled.length;
       const uniq = new Set(filled).size;
       const type = state.types[c];
+      const label = type === 'number' ? 'angka' : type === 'date' ? 'tanggal' : state.long[c] ? 'teks panjang' : 'teks';
 
       const card = document.createElement('div');
       card.className = 'stat-card';
-      const pill = type === 'number' ? 'num' : '';
-      const label = type === 'number' ? 'angka' : type === 'date' ? 'tanggal' : 'teks';
       let html =
-        `<div class="stat-head"><h3>${esc(h)}</h3><span class="pill ${pill}">${label}</span></div>` +
+        `<div class="stat-head"><h3>${esc(h)}</h3><span class="pill ${type === 'number' ? 'num' : ''}">${label}</span></div>` +
         `<div class="kv">` +
         `<span>Terisi</span><span>${fmtInt(filled.length)}</span>` +
         `<span>Kosong</span><span>${fmtInt(missing)}${values.length ? ` (${Math.round(missing / values.length * 100)}%)` : ''}</span>` +
@@ -317,9 +385,15 @@
             `<span>Maksimum</span><span>${fmtNum(nums[nums.length - 1])}</span>` +
             `<span>Rata-rata</span><span>${fmtNum(sum / nums.length)}</span>` +
             `<span>Median</span><span>${fmtNum(med)}</span>` +
-            `<span>Total</span><span>${fmtNum(sum)}</span></div>`;
-          html += histogram(nums);
+            `<span>Total</span><span>${fmtNum(sum)}</span></div>` + histogram(nums);
         } else html += '</div>';
+      } else if (state.long[c]) {
+        const lens = filled.map((v) => v.length);
+        const avg = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : 0;
+        html +=
+          `<span>Panjang rata-rata</span><span>${fmtNum(Math.round(avg))} huruf</span>` +
+          `<span>Terpanjang</span><span>${fmtInt(Math.max(0, ...lens))} huruf</span></div>` +
+          (filled.length ? `<p class="chart-note">Contoh: “${esc(filled[0].slice(0, 120))}${filled[0].length > 120 ? '…' : ''}”</p>` : '');
       } else {
         html += '</div>' + topValues(filled);
       }
@@ -330,11 +404,11 @@
 
   function histogram(sorted) {
     const min = sorted[0], max = sorted[sorted.length - 1];
-    const bins = new Array(20).fill(0);
+    const bins = new Array(24).fill(0);
     if (max === min) bins[0] = sorted.length;
-    else for (const v of sorted) bins[Math.min(19, Math.floor((v - min) / (max - min) * 20))]++;
+    else for (const v of sorted) bins[Math.min(23, Math.floor((v - min) / (max - min) * 24))]++;
     const peak = Math.max(...bins) || 1;
-    return `<div class="spark" title="Distribusi nilai">` +
+    return `<div class="spark" title="Sebaran nilai">` +
       bins.map((b) => `<i style="height:${Math.round(b / peak * 100)}%"></i>`).join('') + `</div>`;
   }
 
@@ -345,23 +419,26 @@
     if (!top.length) return '';
     const peak = top[0][1];
     return `<div class="bars">` + top.map(([v, n]) =>
-      `<div class="bar-row"><div class="bar-label"><b title="${esc(v)}">${esc(v)}</b><span class="muted">${fmtInt(n)}</span></div>` +
+      `<div><div class="bar-label"><b title="${esc(v)}">${esc(v)}</b><span>${fmtInt(n)}</span></div>` +
       `<div class="bar-track"><div class="bar-fill" style="width:${Math.round(n / peak * 100)}%"></div></div></div>`
     ).join('') + `</div>`;
   }
 
-  /* ===================== render: chart ===================== */
+  /* ===================== render: grafik ===================== */
 
   function buildChartControls() {
     const x = $('chartX'), y = $('chartY');
-    x.innerHTML = state.headers.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join('');
+    // kolom teks panjang tidak berguna sebagai sumbu X
+    const xCols = state.headers.map((h, i) => [h, i]).filter(([, i]) => !state.long[i]);
+    x.innerHTML = (xCols.length ? xCols : state.headers.map((h, i) => [h, i]))
+      .map(([h, i]) => `<option value="${i}">${esc(h)}</option>`).join('');
     const numCols = state.headers.map((h, i) => [h, i]).filter(([, i]) => state.types[i] === 'number');
     y.innerHTML = numCols.length
       ? numCols.map(([h, i]) => `<option value="${i}">${esc(h)}</option>`).join('')
       : '<option value="-1">(tidak ada kolom angka)</option>';
 
-    const firstCat = state.headers.findIndex((_, i) => state.types[i] !== 'number');
-    x.value = String(firstCat >= 0 ? firstCat : 0);
+    const firstCat = state.headers.findIndex((_, i) => state.types[i] !== 'number' && !state.long[i]);
+    if (firstCat >= 0) x.value = String(firstCat);
     if (!numCols.length) $('chartAgg').value = 'count';
   }
 
@@ -373,7 +450,7 @@
     const type = $('chartType').value;
     if (!state.headers.length || Number.isNaN(xc)) return;
     if (agg !== 'count' && yc < 0) {
-      box.innerHTML = '<p class="muted">Tidak ada kolom angka untuk diagregasi. Pilih agregasi "Banyak baris".</p>';
+      box.innerHTML = '<p class="chart-note">Tidak ada kolom angka untuk diagregasi. Pilih agregasi “Banyak baris”.</p>';
       return;
     }
 
@@ -393,18 +470,24 @@
       min: g.min === Infinity ? 0 : g.min, max: g.max === -Infinity ? 0 : g.max,
     })[agg]]);
 
-    if (state.types[xc] === 'number' || state.types[xc] === 'date') data.sort((a, b) => a[0].localeCompare(b[0], 'id', { numeric: true }));
-    else if (data.length > 25) data.sort((a, b) => b[1] - a[1]);
+    if (state.types[xc] === 'number' || state.types[xc] === 'date') {
+      data.sort((a, b) => a[0].localeCompare(b[0], 'id', { numeric: true }));
+    } else if (data.length > 25) {
+      data.sort((a, b) => b[1] - a[1]);
+    }
     let note = '';
-    if (data.length > 25) { data = data.slice(0, 25); note = `<p class="muted" style="margin:10px 0 0;font-size:12.5px">Menampilkan 25 kelompok teratas dari ${fmtInt(groups.size)}.</p>`; }
-    if (!data.length) { box.innerHTML = '<p class="muted">Tidak ada data untuk ditampilkan.</p>'; return; }
+    if (data.length > 25) {
+      data = data.slice(0, 25);
+      note = `<p class="chart-note">Menampilkan 25 kelompok teratas dari ${fmtInt(groups.size)}.</p>`;
+    }
+    if (!data.length) { box.innerHTML = '<p class="chart-note">Tidak ada data untuk ditampilkan.</p>'; return; }
 
     box.innerHTML = svgChart(data, type) + note;
   }
 
   function svgChart(data, type) {
     const W = Math.max(560, data.length * 46), H = 340;
-    const m = { t: 16, r: 16, b: 74, l: 62 };
+    const m = { t: 14, r: 14, b: 76, l: 66 };
     const iw = W - m.l - m.r, ih = H - m.t - m.b;
     const vals = data.map((d) => d[1]);
     let max = Math.max(0, ...vals), min = Math.min(0, ...vals);
@@ -416,38 +499,38 @@
     for (let i = 0; i <= 4; i++) {
       const v = min + (max - min) * (i / 4), y = yScale(v);
       s += `<line class="gridline" x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}"/>` +
-           `<text class="axis-text" x="${m.l - 8}" y="${y + 4}" text-anchor="end">${esc(fmtNum(v))}</text>`;
+           `<text class="axis-text" x="${m.l - 9}" y="${y + 3.5}" text-anchor="end">${esc(fmtNum(v))}</text>`;
     }
     if (type === 'bar') {
-      const bw = Math.min(46, step * 0.66);
+      const bw = Math.min(42, step * 0.62);
       data.forEach(([k, v], i) => {
-        const cx = m.l + step * (i + 0.5);
-        const y0 = yScale(0), y1 = yScale(v);
-        s += `<rect class="mark" x="${cx - bw / 2}" y="${Math.min(y0, y1)}" width="${bw}" height="${Math.max(1, Math.abs(y1 - y0))}" rx="4">` +
+        const cx = m.l + step * (i + 0.5), y0 = yScale(0), y1 = yScale(v);
+        s += `<rect class="mark" x="${cx - bw / 2}" y="${Math.min(y0, y1)}" width="${bw}" height="${Math.max(1, Math.abs(y1 - y0))}">` +
              `<title>${esc(k)}: ${esc(fmtNum(v))}</title></rect>`;
       });
     } else {
       const pts = data.map(([, v], i) => `${m.l + step * (i + 0.5)},${yScale(v)}`);
       s += `<polyline class="line" points="${pts.join(' ')}"/>`;
       data.forEach(([k, v], i) => {
-        s += `<circle class="dot" cx="${m.l + step * (i + 0.5)}" cy="${yScale(v)}" r="3.5"><title>${esc(k)}: ${esc(fmtNum(v))}</title></circle>`;
+        s += `<circle class="dot" cx="${m.l + step * (i + 0.5)}" cy="${yScale(v)}" r="3"><title>${esc(k)}: ${esc(fmtNum(v))}</title></circle>`;
       });
     }
     data.forEach(([k], i) => {
-      const cx = m.l + step * (i + 0.5);
+      const cx = m.l + step * (i + 0.5), y = H - m.b + 16;
       const label = k.length > 16 ? k.slice(0, 15) + '…' : k;
-      s += `<text class="axis-text" x="${cx}" y="${H - m.b + 18}" text-anchor="end" transform="rotate(-38 ${cx} ${H - m.b + 18})">${esc(label)}</text>`;
+      s += `<text class="axis-text" x="${cx}" y="${y}" text-anchor="end" transform="rotate(-38 ${cx} ${y})">${esc(label)}</text>`;
     });
     return s + '</svg>';
   }
 
-  /* ===================== export ===================== */
+  /* ===================== ekspor ===================== */
+
+  const csvQuote = (v) => /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 
   function currentCSV() {
     const cols = visibleCols();
-    const q = (v) => /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    const lines = [cols.map((c) => q(state.headers[c])).join(',')];
-    for (const r of state.view) lines.push(cols.map((c) => q(state.rows[r][c] ?? '')).join(','));
+    const lines = [cols.map((c) => csvQuote(state.headers[c])).join(',')];
+    for (const r of state.view) lines.push(cols.map((c) => csvQuote(state.rows[r][c] ?? '')).join(','));
     return lines.join('\r\n');
   }
 
@@ -456,8 +539,7 @@
     return JSON.stringify(state.view.map((r) => {
       const o = {};
       for (const c of cols) {
-        const raw = state.rows[r][c] ?? '';
-        o[state.headers[c]] = state.types[c] === 'number' ? state.nums[r][c] : raw;
+        o[state.headers[c]] = state.types[c] === 'number' ? state.nums[r][c] : (state.rows[r][c] ?? '');
       }
       return o;
     }), null, 2);
@@ -471,7 +553,10 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  /* ===================== helpers ===================== */
+  const copy = (text, ok) =>
+    navigator.clipboard.writeText(text).then(() => toast(ok), () => toast('Browser menolak akses papan klip.'));
+
+  /* ===================== utilitas ===================== */
 
   const fmtInt = (n) => new Intl.NumberFormat('id-ID').format(n);
   const fmtNum = (n) => Number.isInteger(n)
@@ -513,11 +598,13 @@
     });
   }
 
-  /* ===================== events ===================== */
+  /* ===================== event ===================== */
 
   const drop = $('drop');
   drop.addEventListener('click', () => $('file').click());
-  drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } });
+  drop.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); }
+  });
   $('file').addEventListener('change', (e) => readFile(e.target.files[0]));
 
   ['dragenter', 'dragover'].forEach((ev) =>
@@ -550,69 +637,71 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { state.query = e.target.value; state.page = 0; applyFilter(); }, 180);
   });
-  $('prev').addEventListener('click', () => { if (state.page > 0) { state.page--; renderTable(); scrollTop(); } });
+
+  const scrollTableTop = () => $('tableWrap').scrollTo({ top: 0 });
+  $('prev').addEventListener('click', () => { if (state.page > 0) { state.page--; renderTable(); scrollTableTop(); } });
   $('next').addEventListener('click', () => {
-    if ((state.page + 1) * PAGE_SIZE < state.view.length) { state.page++; renderTable(); scrollTop(); }
+    if ((state.page + 1) * PAGE_SIZE < state.view.length) { state.page++; renderTable(); scrollTableTop(); }
   });
-  const scrollTop = () => $('tableWrap').scrollTo({ top: 0 });
+
+  $('btnWrap').addEventListener('click', () => {
+    state.wrap = !state.wrap;
+    $('tableWrap').classList.toggle('wrap', state.wrap);
+    $('btnWrap').setAttribute('aria-pressed', String(state.wrap));
+  });
 
   for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => switchTab(t.dataset.tab));
   for (const s of ['chartX', 'chartY', 'chartAgg', 'chartType']) $(s).addEventListener('change', renderChart);
 
+  // panel detail
+  $('sheetPrev').addEventListener('click', () => moveSheet(-1));
+  $('sheetNext').addEventListener('click', () => moveSheet(1));
+  $('sheetCopy').addEventListener('click', () => {
+    const r = state.view[state.sheetAt];
+    if (r === undefined) return;
+    const cols = visibleCols();
+    copy(cols.map((c) => `${state.headers[c]}: ${state.rows[r][c] ?? ''}`).join('\n'), 'Baris disalin.');
+  });
+  $('sheet').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeSheet(); });
+  document.addEventListener('keydown', (e) => {
+    if ($('sheet').classList.contains('hidden')) return;
+    if (e.key === 'Escape') closeSheet();
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveSheet(1); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveSheet(-1); }
+  });
+
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-export]');
     if (btn) {
-      const base = state.name.replace(/\.[^.]+$/, '');
+      const base = state.name.replace(/\.[^.]+$/, '') || 'data';
       if (btn.dataset.export === 'csv') { download(currentCSV(), base + '-preview.csv', 'text/csv'); toast('CSV diunduh.'); }
       if (btn.dataset.export === 'json') { download(currentJSON(), base + '-preview.json', 'application/json'); toast('JSON diunduh.'); }
-      if (btn.dataset.export === 'copy') {
-        navigator.clipboard.writeText(currentCSV()).then(() => toast('Disalin ke clipboard.'), () => toast('Browser menolak akses clipboard.'));
-      }
+      if (btn.dataset.export === 'copy') copy(currentCSV(), 'Disalin ke papan klip.');
     }
-    // tutup menu dropdown saat klik di luar
     for (const d of document.querySelectorAll('.menu[open]')) if (!d.contains(e.target)) d.open = false;
   });
 
-  // tema
-  const btnTheme = $('btnTheme');
-  const saved = localStorage.getItem('csvpreview-theme');
-  if (saved) document.documentElement.dataset.theme = saved;
-  const paintThemeIcon = () => {
-    const t = document.documentElement.dataset.theme;
-    btnTheme.querySelector('[data-theme-icon]').textContent = t === 'dark' ? '☾' : t === 'light' ? '☀' : '◐';
-  };
-  paintThemeIcon();
-  btnTheme.addEventListener('click', () => {
-    const order = ['auto', 'light', 'dark'];
-    const next = order[(order.indexOf(document.documentElement.dataset.theme || 'auto') + 1) % 3];
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem('csvpreview-theme', next);
-    paintThemeIcon();
-  });
+  /* ===================== data contoh ===================== */
 
-  window.addEventListener('resize', () => { /* kartu & tabel sudah dirender keduanya */ });
-
-  /* ===================== sample ===================== */
-
-  const SAMPLE = `tanggal,kota,produk,kategori,unit,harga_satuan,total
-2025-01-05,Bandung,Kopi Arabika,Minuman,12,85000,1020000
-2025-01-06,Jakarta,Teh Melati,Minuman,30,25000,750000
-2025-01-08,Surabaya,Kopi Robusta,Minuman,18,62000,1116000
-2025-01-11,Bandung,Roti Gandum,Makanan,42,18000,756000
-2025-01-14,Medan,Kopi Arabika,Minuman,9,85000,765000
-2025-01-17,Jakarta,Cokelat Bar,Makanan,55,32000,1760000
-2025-01-19,Yogyakarta,Teh Melati,Minuman,21,25000,525000
-2025-01-22,Surabaya,Roti Gandum,Makanan,38,18000,684000
-2025-01-25,Bandung,Cokelat Bar,Makanan,27,32000,864000
-2025-01-28,Medan,Teh Melati,Minuman,44,25000,1100000
-2025-02-02,Jakarta,Kopi Arabika,Minuman,33,85000,2805000
-2025-02-05,Yogyakarta,Roti Gandum,Makanan,16,18000,288000
-2025-02-09,Surabaya,Cokelat Bar,Makanan,61,32000,1952000
-2025-02-12,Bandung,Kopi Robusta,Minuman,24,62000,1488000
-2025-02-15,Medan,Roti Gandum,Makanan,,18000,
-2025-02-18,Jakarta,Teh Melati,Minuman,52,25000,1300000
-2025-02-21,Yogyakarta,Kopi Arabika,Minuman,14,85000,1190000
-2025-02-24,Surabaya,Kopi Robusta,Minuman,29,62000,1798000
-2025-02-27,Bandung,Teh Melati,Minuman,37,25000,925000
-2025-03-03,Medan,Cokelat Bar,Makanan,48,32000,1536000`;
+  const SAMPLE = `tanggal,kota,produk,kategori,unit,harga_satuan,total,catatan
+2025-01-05,Bandung,Kopi Arabika,Minuman,12,85000,1020000,"Pesanan kafe langganan di Dago. Minta giling kasar untuk tubruk, dan pengiriman pagi sebelum jam 9 karena toko buka jam 10. Sudah dikonfirmasi lewat WhatsApp oleh pemiliknya."
+2025-01-06,Jakarta,Teh Melati,Minuman,30,25000,750000,"Stok reguler bulanan."
+2025-01-08,Surabaya,Kopi Robusta,Minuman,18,62000,1116000,"Ada keluhan kemasan penyok pada pengiriman sebelumnya, kali ini dobel bubble wrap. Pelanggan minta foto paket sebelum dikirim sebagai bukti kondisi barang."
+2025-01-11,Bandung,Roti Gandum,Makanan,42,18000,756000,
+2025-01-14,Medan,Kopi Arabika,Minuman,9,85000,765000,"Pengiriman lewat kargo udara, estimasi dua hari."
+2025-01-17,Jakarta,Cokelat Bar,Makanan,55,32000,1760000,"Untuk hampers Imlek. Perlu kartu ucapan terpisah dan pita merah; desain kartu dikirim pelanggan menyusul paling lambat H-3 sebelum tanggal kirim yang diminta."
+2025-01-19,Yogyakarta,Teh Melati,Minuman,21,25000,525000,"Titip di warung depan kalau rumah kosong."
+2025-01-22,Surabaya,Roti Gandum,Makanan,38,18000,684000,
+2025-01-25,Bandung,Cokelat Bar,Makanan,27,32000,864000,"Suhu pengiriman dijaga, jangan sampai kena matahari langsung."
+2025-01-28,Medan,Teh Melati,Minuman,44,25000,1100000,"Pembayaran tempo 14 hari sesuai kesepakatan awal tahun. Faktur dikirim ke email bagian keuangan, bukan ke pemilik toko, supaya tidak terlewat seperti bulan lalu."
+2025-02-02,Jakarta,Kopi Arabika,Minuman,33,85000,2805000,"Order terbesar bulan ini."
+2025-02-05,Yogyakarta,Roti Gandum,Makanan,16,18000,288000,
+2025-02-09,Surabaya,Cokelat Bar,Makanan,61,32000,1952000,"Permintaan label kedaluwarsa dicetak ulang dengan format tanggal Indonesia."
+2025-02-12,Bandung,Kopi Robusta,Minuman,24,62000,1488000,"Pelanggan baru dari rekomendasi kafe Dago; minta sampel dua varian lain untuk dicoba sebelum memutuskan langganan bulanan."
+2025-02-15,Medan,Roti Gandum,Makanan,,18000,,"Jumlah unit belum dikonfirmasi, menunggu balasan pelanggan."
+2025-02-18,Jakarta,Teh Melati,Minuman,52,25000,1300000,
+2025-02-21,Yogyakarta,Kopi Arabika,Minuman,14,85000,1190000,"Kirim bersamaan dengan pesanan roti minggu depan agar hemat ongkir."
+2025-02-24,Surabaya,Kopi Robusta,Minuman,29,62000,1798000,"Minta struk fisik dimasukkan ke dalam paket."
+2025-02-27,Bandung,Teh Melati,Minuman,37,25000,925000,
+2025-03-03,Medan,Cokelat Bar,Makanan,48,32000,1536000,"Rencana restock rutin tiap awal bulan; kalau stok kosong boleh diganti varian dark 70% dengan harga yang sama."`;
 })();
