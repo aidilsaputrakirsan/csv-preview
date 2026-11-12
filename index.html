@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>CSV Preview</title>
-<meta name="description" content="Pratinjau file CSV langsung di browser — tabel, statistik kolom, dan grafik. Tanpa upload ke server.">
+<title>CSV &amp; Excel Preview</title>
+<meta name="description" content="Pratinjau file CSV dan Excel (.xlsx, .xls, .ods) langsung di browser — tabel, statistik kolom, dan grafik. Tanpa upload ke server.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#faf9f6">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231b1a18'/><g fill='%23c2410c'><rect x='7' y='9' width='18' height='2.6'/><rect x='7' y='14.7' width='11' height='2.6'/><rect x='7' y='20.4' width='15' height='2.6'/></g></svg>">
@@ -22,26 +22,27 @@
 <!-- ======================= LANDING ======================= -->
 <main id="landing" class="landing">
   <p class="eyebrow">Berjalan di perangkatmu · berkas tidak dikirim ke mana pun</p>
-  <h1>Buka isi <em>CSV</em> tanpa spreadsheet.</h1>
+  <h1>Buka isi <em>CSV</em> &amp; <em>Excel</em> tanpa spreadsheet.</h1>
 
-  <div id="drop" class="dropzone" tabindex="0" role="button" aria-label="Pilih atau jatuhkan berkas CSV">
-    <span class="drop-line">Jatuhkan <b>.csv</b> di sini</span>
-    <span class="drop-sub">atau ketuk untuk memilih berkas · .csv .tsv .txt</span>
-    <input id="file" type="file" accept=".csv,.tsv,.txt,text/csv" hidden>
+  <div id="drop" class="dropzone" tabindex="0" role="button" aria-label="Pilih atau jatuhkan berkas CSV atau Excel">
+    <span class="drop-line">Jatuhkan <b>.csv</b> atau <b>.xlsx</b> di sini</span>
+    <span class="drop-sub">atau ketuk untuk memilih berkas · .csv .tsv .txt .xlsx .xls .ods</span>
+    <input id="file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xlsb,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet" hidden>
   </div>
 
   <div class="landing-alt">
     <button id="btnSample" class="link" type="button">Coba data contoh</button>
     <span class="dot">·</span>
-    <button id="btnPaste" class="link" type="button">Tempel teks CSV</button>
+    <button id="btnPaste" class="link" type="button">Tempel CSV / sel Excel</button>
   </div>
 
   <div id="pasteWrap" class="paste-wrap hidden">
-    <textarea id="pasteArea" rows="6" spellcheck="false" placeholder="nama,kota,nilai&#10;Ani,Bandung,82"></textarea>
+    <textarea id="pasteArea" rows="6" spellcheck="false" placeholder="Tempel teks CSV, atau salin sel dari Excel lalu tempel di sini&#10;nama,kota,nilai&#10;Ani,Bandung,82"></textarea>
     <button id="btnPasteGo" class="btn solid" type="button">Tampilkan</button>
   </div>
 
   <ol class="features">
+    <li><b>Excel langsung terbuka</b><span>Berkas <code>.xlsx</code>, <code>.xls</code>, dan <code>.ods</code>. Banyak lembar? Tinggal pilih lembarnya; baris judul laporan di atas tabel dilewati otomatis.</span></li>
     <li><b>Kolom panjang tetap rapi</b><span>Catatan bertele-tele dipangkas jadi dua baris; klik barisnya untuk membaca utuh.</span></li>
     <li><b>Tipe terdeteksi sendiri</b><span>Angka, tanggal, dan teks — termasuk format <code>Rp 85.000</code> dan <code>1.234,56</code>.</span></li>
     <li><b>Ringkasan tiap kolom</b><span>Berapa yang kosong, berapa nilai unik, sebaran, min–maks–rata-rata.</span></li>
@@ -63,6 +64,18 @@
     </nav>
   </div>
 
+  <!-- Khusus Excel: pilih lembar kerja & baris judul kolom -->
+  <div id="wsBar" class="ws-bar hidden">
+    <div class="ws-sheets">
+      <span class="ws-label" id="wsLabel">Lembar</span>
+      <div id="wsList" class="ws-list" role="tablist" aria-labelledby="wsLabel"></div>
+    </div>
+    <label class="ws-head" title="Baris yang berisi nama-nama kolom. Ganti kalau tebakan otomatisnya keliru.">
+      <span class="ws-label">Judul kolom di</span>
+      <select id="wsHeader"></select>
+    </label>
+  </div>
+
   <!-- TABEL -->
   <div id="panel-table" class="panel">
     <div class="toolbar">
@@ -79,6 +92,7 @@
         <details class="menu">
           <summary class="btn">Unduh</summary>
           <div class="menu-body">
+            <button class="menu-item" data-export="xlsx" type="button">Excel .xlsx (hasil filter)</button>
             <button class="menu-item" data-export="csv" type="button">CSV (hasil filter)</button>
             <button class="menu-item" data-export="json" type="button">JSON (hasil filter)</button>
             <button class="menu-item" data-export="copy" type="button">Salin ke papan klip</button>

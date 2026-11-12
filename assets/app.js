@@ -20,7 +20,12 @@
     page: 0,
     wrap: false,       // mode "Teks penuh"
     sheetAt: -1,       // posisi baris yang dibuka di panel detail (indeks dalam view)
+    rowNos: null,      // nomor baris asli di Excel per baris data (null = CSV: baris ke-r+2)
+    rawNums: null,     // angka asli dari sel Excel (lebih presisi dari teks tampilannya)
+    book: null,        // workbook Excel yang sedang dibuka: { name, sheets, current }
   };
+
+  const rowNo = (r) => (state.rowNos ? state.rowNos[r] : r + 2);
 
   /* ===================== CSV parsing ===================== */
 
@@ -91,7 +96,9 @@
   }
 
   function inferTypes() {
-    const { headers, rows } = state;
+    const { headers, rows, rawNums } = state;
+    // Sel angka dari Excel sudah punya nilai asli; teks hanya diparse kalau tidak ada.
+    const numAt = (r, c) => rawNums?.[r]?.[c] ?? toNumber(rows[r][c]);
     state.types = headers.map(() => 'text');
     state.long = headers.map(() => false);
     state.nums = rows.map(() => new Array(headers.length).fill(null));
@@ -105,7 +112,7 @@
         filled++;
         chars += v.length;
         if (v.length > longest) longest = v.length;
-        if (toNumber(v) !== null) numeric++;
+        if (numAt(r, c) !== null) numeric++;
         else if (DATE_RE.test(v)) dates++;
       }
       if (filled && numeric / filled >= 0.85) state.types[c] = 'number';
@@ -113,49 +120,266 @@
       else if (filled && (chars / filled > LONG_AVG || longest > 160)) state.long[c] = true;
 
       if (state.types[c] === 'number') {
-        for (let r = 0; r < rows.length; r++) state.nums[r][c] = toNumber(rows[r][c]);
+        for (let r = 0; r < rows.length; r++) state.nums[r][c] = numAt(r, c);
       }
     }
   }
 
   /* ===================== muat data ===================== */
 
+  /** Muat teks CSV. */
   function load(text, name) {
     text = text.replace(/^﻿/, '');
     const delim = detectDelimiter(text.slice(0, 64 * 1024));
-    let rows = parseCSV(text, delim).filter((r) => r.length > 1 || (r[0] ?? '').trim() !== '');
+    const rows = parseCSV(text, delim).filter((r) => r.length > 1 || (r[0] ?? '').trim() !== '');
     if (!rows.length) return toast('Berkas kosong atau tidak bisa dibaca.');
+    state.book = null;
+    show(name, rows, { meta: `pemisah "${delim === '\t' ? 'Tab' : delim}"` });
+  }
 
+  /**
+   * Tampilkan tabel. `rows[0]` adalah judul kolom. Dipakai bersama oleh CSV dan Excel,
+   * sehingga semua fitur (cari, urut, statistik, grafik, unduh) berlaku untuk keduanya.
+   */
+  function show(name, rows, { meta = '', rowNos = null, raw = null, tab = 'table' } = {}) {
     const headers = rows[0].map((h, i) => (h || '').trim() || `Kolom ${i + 1}`);
     rows = rows.slice(1);
     const width = headers.length;
     for (const r of rows) { while (r.length < width) r.push(''); if (r.length > width) r.length = width; }
 
     Object.assign(state, {
-      name, headers, rows, hidden: new Set(), sort: { col: -1, dir: 1 }, query: '', page: 0, sheetAt: -1,
+      name, headers, rows, rowNos, rawNums: raw,
+      hidden: new Set(), sort: { col: -1, dir: 1 }, query: '', page: 0, sheetAt: -1,
     });
     inferTypes();
+    state.rawNums = null; // sudah disalin ke state.nums
 
     $('search').value = '';
     $('fileName').textContent = name;
-    $('fileStats').textContent =
-      `${fmtInt(rows.length)} baris · ${width} kolom · pemisah "${delim === '\t' ? 'Tab' : delim}"`;
+    $('fileStats').textContent = `${fmtInt(rows.length)} baris · ${width} kolom` + (meta ? ` · ${meta}` : '');
     $('landing').classList.add('hidden');
     $('app').classList.remove('hidden');
     $('btnNew').classList.remove('hidden');
+    renderWsBar();
     buildColToggles();
     buildChartControls();
     applyFilter();
-    switchTab('table');
+    switchTab(tab);
     window.scrollTo({ top: 0 });
   }
 
-  function readFile(file) {
+  const EXCEL_EXT = /\.(xlsx|xlsm|xlsb|xls|ods|fods)$/i;
+
+  async function readFile(file) {
     if (!file) return;
-    const reader = new FileReader();
-    reader.onerror = () => toast('Gagal membaca berkas.');
-    reader.onload = () => load(String(reader.result), file.name);
-    reader.readAsText(file, 'utf-8');
+    let buf;
+    try { buf = await file.arrayBuffer(); } catch { return toast('Gagal membaca berkas.'); }
+    // Kenali Excel dari ekstensi, atau dari isi berkas (ZIP = .xlsx/.ods, OLE = .xls lama)
+    // supaya berkas yang salah nama tetap terbuka dengan benar.
+    const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+    const zip = b[0] === 0x50 && b[1] === 0x4b;
+    const ole = b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0;
+    if (EXCEL_EXT.test(file.name) || zip || ole) return openExcel(buf, file.name);
+    load(new TextDecoder('utf-8').decode(buf), file.name);
+  }
+
+  /* ===================== Excel ===================== */
+
+  // Pustaka SheetJS (~930 KB) baru diunduh saat pertama kali membuka Excel,
+  // jadi pengguna CSV tidak ikut menanggung ukurannya.
+  let XLSX = null, xlsxLoading = null;
+  function loadXLSX() {
+    if (XLSX) return Promise.resolve(XLSX);
+    return (xlsxLoading ||= new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'assets/vendor/xlsx.full.min.js';
+      s.onload = () => { XLSX = window.XLSX; resolve(XLSX); };
+      s.onerror = () => { xlsxLoading = null; s.remove(); reject(new Error('lib')); };
+      document.head.appendChild(s);
+    }));
+  }
+
+  async function openExcel(buf, name) {
+    setBusy(`Membuka ${name}…`);
+    try {
+      await loadXLSX();
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r))); // beri waktu indikator tampil
+      const wb = XLSX.read(buf, { type: 'array', cellNF: true });
+      const date1904 = !!wb.Workbook?.WBProps?.date1904;
+      const sheets = [];
+      wb.SheetNames.forEach((n, i) => {
+        const hidden = wb.Workbook?.Sheets?.[i]?.Hidden || 0;
+        if (hidden === 2) return; // "very hidden": memang tidak untuk dilihat pengguna
+        const data = parseSheet(wb.Sheets[n], date1904);
+        sheets.push({ name: n, hidden: hidden === 1, data, header: data ? data.header : 0 });
+      });
+      const usable = sheets.filter((s) => s.data);
+      if (!usable.length) return toast('Tidak ada data di berkas Excel ini — semua lembarnya kosong.');
+      // buka lembar yang terakhir aktif saat berkas disimpan, kalau berisi
+      const active = wb.SheetNames[wb.Workbook?.WBView?.[0]?.activeTab ?? 0];
+      const first = usable.find((s) => s.name === active) || usable[0];
+      state.book = { name, sheets, current: first };
+      showSheet(first, 'table');
+      if (usable.length > 1) toast(`Berkas ini punya ${usable.length} lembar — pilih lewat tombol “Lembar”.`);
+    } catch (err) {
+      const msg = String(err?.message || '');
+      toast(msg === 'lib' ? 'Gagal memuat pembaca Excel. Periksa koneksi internet, lalu coba lagi.'
+        : /password|encrypt/i.test(msg) ? 'Berkas ini dikunci kata sandi. Buka di Excel, hapus sandinya, lalu coba lagi.'
+        : 'Berkas Excel tidak bisa dibaca. Pastikan formatnya .xlsx, .xls, atau .ods.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Ubah satu worksheet jadi grid teks. Hanya area yang berisi yang diambil (baris/kolom kosong di
+   * pinggir terbuang), sel gabungan (merge) diisi nilai sel induknya, dan baris kosong dilewati
+   * sambil tetap mencatat nomor baris aslinya di Excel.
+   */
+  function parseSheet(ws, date1904) {
+    if (!ws) return null;
+    const cells = [];
+    let minR = Infinity, maxR = -1, minC = Infinity, maxC = -1;
+    const put = (r, c, cell) => {
+      const text = cellText(cell, date1904);
+      if (!text.trim()) return;
+      cells.push([r, c, text, cellNum(cell)]);
+      if (r < minR) minR = r; if (r > maxR) maxR = r;
+      if (c < minC) minC = c; if (c > maxC) maxC = c;
+    };
+    for (const addr in ws) {
+      if (addr[0] === '!') continue;
+      const { r, c } = XLSX.utils.decode_cell(addr);
+      put(r, c, ws[addr]);
+    }
+    for (const m of ws['!merges'] || []) {
+      const top = ws[XLSX.utils.encode_cell(m.s)];
+      if (!top || (m.e.r - m.s.r + 1) * (m.e.c - m.s.c + 1) > 5000) continue;
+      for (let r = m.s.r; r <= m.e.r; r++)
+        for (let c = m.s.c; c <= m.e.c; c++) if (r !== m.s.r || c !== m.s.c) put(r, c, top);
+    }
+    if (!cells.length) return null;
+
+    const W = maxC - minC + 1;
+    const grid = Array.from({ length: maxR - minR + 1 }, () => new Array(W).fill(''));
+    const nums = new Array(grid.length).fill(null);
+    for (const [r, c, text, n] of cells) {
+      grid[r - minR][c - minC] = text;
+      if (n !== null) (nums[r - minR] ||= new Array(W).fill(null))[c - minC] = n;
+    }
+    const rows = [], rowNos = [], raw = [];
+    grid.forEach((row, i) => {
+      if (row.every((v) => v === '')) return;
+      rows.push(row); rowNos.push(minR + i + 1); raw.push(nums[i]);
+    });
+    return { rows, rowNos, raw, header: guessHeader(rows) };
+  }
+
+  /** Teks sel seperti yang terlihat di Excel; tanggal dijadikan YYYY-MM-DD supaya bisa diurutkan. */
+  function cellText(cell, date1904) {
+    if (!cell || cell.v == null) return '';
+    if (cell.t === 's') return String(cell.v);
+    if (cell.t === 'n') {
+      if (cell.z && XLSX.SSF.is_date(cell.z)) return excelDate(cell.v, date1904);
+      // format "General" menampilkan angka panjang (NIK, no. HP) sebagai 1,23E+15 — tampilkan utuh
+      if ((!cell.z || cell.z === 'General') && Number.isInteger(cell.v)) return String(cell.v);
+    }
+    return String(cell.w ?? cell.v).trim();
+  }
+
+  /** Angka asli sel (bukan tanggal). Persentase disamakan dengan tampilannya: 15% → 15. */
+  function cellNum(cell) {
+    if (!cell || cell.t !== 'n' || typeof cell.v !== 'number') return null;
+    if (cell.z && XLSX.SSF.is_date(cell.z)) return null;
+    return /%\s*$/.test(cell.w || '') ? cell.v * 100 : cell.v;
+  }
+
+  function excelDate(v, date1904) {
+    const d = XLSX.SSF.parse_date_code(v, { date1904 });
+    if (!d) return String(v);
+    const p = (n) => String(n).padStart(2, '0');
+    const time = d.H || d.M || d.S ? `${p(d.H)}:${p(d.M)}${d.S ? ':' + p(d.S) : ''}` : '';
+    if (v < 1) return time || '00:00'; // sel berisi jam saja
+    return `${d.y}-${p(d.m)}-${p(d.d)}${time ? ' ' + time : ''}`;
+  }
+
+  /**
+   * Tebak baris judul kolom. Lembar Excel sering diawali judul laporan ("Rekap Penjualan 2025")
+   * yang hanya mengisi satu sel; judul kolom yang sebenarnya adalah baris pertama yang terisi penuh.
+   */
+  function guessHeader(rows) {
+    // hitung nilai yang BERBEDA: judul yang di-merge selebar tabel tetap terhitung satu
+    const filled = rows.slice(0, 20).map((r) => new Set(r.filter((v) => v !== '')).size);
+    const need = Math.max(2, Math.ceil(Math.max(...filled) * 0.6));
+    const i = filled.findIndex((n) => n >= need);
+    return i < 0 ? 0 : Math.min(i, 14);
+  }
+
+  /** Potong data lembar mulai dari baris judul kolom; buang kolom yang seluruhnya kosong. */
+  function sliceSheet(data, h) {
+    const rows = data.rows.slice(h);
+    const keep = rows[0].map((_, c) => c).filter((c) => rows.some((r) => r[c] !== ''));
+    return {
+      rows: rows.map((r) => keep.map((c) => r[c])),
+      raw: data.raw.slice(h + 1).map((n) => (n ? keep.map((c) => n[c]) : null)),
+      rowNos: data.rowNos.slice(h + 1),
+    };
+  }
+
+  function showSheet(s, tab) {
+    state.book.current = s;
+    const { rows, rowNos, raw } = sliceSheet(s.data, s.header);
+    const skipped = s.header ? ` · judul kolom di baris ${s.data.rowNos[s.header]}` : '';
+    show(state.book.name, rows, { rowNos, raw, tab, meta: `lembar “${s.name}”${skipped}` });
+  }
+
+  /** Bilah lembar kerja + pilihan baris judul kolom (hanya untuk Excel). */
+  function renderWsBar() {
+    const bar = $('wsBar');
+    const book = state.book;
+    bar.classList.toggle('hidden', !book);
+    if (!book) return;
+
+    const list = $('wsList');
+    list.replaceChildren(...book.sheets.map((s) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ws-tab';
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', String(s === book.current));
+      btn.disabled = !s.data;
+      const n = s.data ? Math.max(0, s.data.rows.length - s.header - 1) : 0;
+      btn.title = s.data ? `${s.name}${s.hidden ? ' (lembar tersembunyi)' : ''} — ${fmtInt(n)} baris` : `${s.name} — kosong`;
+      btn.innerHTML = `<b>${esc(s.name)}</b><small>${s.data ? fmtInt(n) : 'kosong'}</small>` +
+        (s.hidden ? '<small class="ws-hid">tersembunyi</small>' : '');
+      btn.addEventListener('click', () => { if (s !== book.current) showSheet(s, currentTab()); });
+      return btn;
+    }));
+    list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+    const s = book.current, sel = $('wsHeader');
+    sel.innerHTML = s.data.rows.slice(0, 15).map((row, i) => {
+      const peek = row.filter((v) => v !== '').slice(0, 3).join(' · ');
+      const label = `Baris ${s.data.rowNos[i]} — ${peek.length > 42 ? peek.slice(0, 41) + '…' : peek}`;
+      return `<option value="${i}">${esc(label)}</option>`;
+    }).join('');
+    sel.value = String(s.header);
+  }
+
+  const currentTab = () => document.querySelector('.tab.active')?.dataset.tab || 'table';
+
+  /** Indikator "sedang membuka" di kotak unggah. */
+  let dropHTML = null;
+  function setBusy(msg) {
+    const drop = $('drop'), line = drop.querySelector('.drop-line');
+    if (msg) {
+      dropHTML ??= line.innerHTML;
+      line.textContent = msg;
+    } else if (dropHTML !== null) {
+      line.innerHTML = dropHTML; dropHTML = null;
+    }
+    drop.classList.toggle('busy', !!msg);
+    drop.setAttribute('aria-busy', String(!!msg));
   }
 
   /* ===================== filter + urut ===================== */
@@ -242,7 +466,7 @@
       card.addEventListener('click', () => openSheet(at));
       const idx = document.createElement('div');
       idx.className = 'card-idx';
-      idx.textContent = `BARIS ${fmtInt(r + 2)}`;
+      idx.textContent = `BARIS ${fmtInt(rowNo(r))}`;
       card.appendChild(idx);
       let cardHasLong = false;
 
@@ -316,7 +540,7 @@
     state.sheetAt = at;
     const r = state.view[at];
     const row = state.rows[r];
-    $('sheetTitle').textContent = `Baris ${fmtInt(r + 2)} · ${fmtInt(at + 1)} dari ${fmtInt(state.view.length)}`;
+    $('sheetTitle').textContent = `Baris ${fmtInt(rowNo(r))} · ${fmtInt(at + 1)} dari ${fmtInt(state.view.length)}`;
 
     const frag = document.createDocumentFragment();
     for (const c of visibleCols()) {
@@ -545,6 +769,22 @@
     }), null, 2);
   }
 
+  /** Unduh hasil filter sebagai .xlsx; kolom angka disimpan sebagai angka sungguhan. */
+  async function exportXLSX(base) {
+    try { await loadXLSX(); } catch { return toast('Gagal memuat penulis Excel. Periksa koneksi internet.'); }
+    const cols = visibleCols();
+    const aoa = [cols.map((c) => state.headers[c])];
+    for (const r of state.view) {
+      aoa.push(cols.map((c) => (state.types[c] === 'number' && state.nums[r][c] !== null)
+        ? state.nums[r][c] : (state.rows[r][c] ?? '')));
+    }
+    const wb = XLSX.utils.book_new();
+    const sheetName = (state.book?.current.name || 'Data').replace(/[[\]:*?/\\]/g, '').slice(0, 31) || 'Data';
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
+    XLSX.writeFile(wb, base + '-preview.xlsx');
+    toast('Excel diunduh.');
+  }
+
   function download(text, filename, mime) {
     const url = URL.createObjectURL(new Blob(['﻿' + text], { type: mime }));
     const a = document.createElement('a');
@@ -600,8 +840,16 @@
 
   /* ===================== event ===================== */
 
+  $('wsHeader').addEventListener('change', (e) => {
+    const s = state.book?.current;
+    if (!s) return;
+    s.header = Number(e.target.value);
+    showSheet(s, currentTab());
+    toast(`Judul kolom diambil dari baris ${s.data.rowNos[s.header]}.`);
+  });
+
   const drop = $('drop');
-  drop.addEventListener('click', () => $('file').click());
+  drop.addEventListener('click', () => { if (!drop.classList.contains('busy')) $('file').click(); });
   drop.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); }
   });
@@ -673,7 +921,10 @@
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-export]');
     if (btn) {
-      const base = state.name.replace(/\.[^.]+$/, '') || 'data';
+      let base = state.name.replace(/\.[^.]+$/, '') || 'data';
+      // workbook berlembar banyak: sertakan nama lembar supaya hasil unduhan tidak tertukar
+      if (state.book && state.book.sheets.length > 1) base += '-' + state.book.current.name.replace(/[\\/:*?"<>|]/g, '');
+      if (btn.dataset.export === 'xlsx') exportXLSX(base);
       if (btn.dataset.export === 'csv') { download(currentCSV(), base + '-preview.csv', 'text/csv'); toast('CSV diunduh.'); }
       if (btn.dataset.export === 'json') { download(currentJSON(), base + '-preview.json', 'application/json'); toast('JSON diunduh.'); }
       if (btn.dataset.export === 'copy') copy(currentCSV(), 'Disalin ke papan klip.');

@@ -90,6 +90,9 @@ select{padding:8px 9px; min-height:36px; max-width:100%; font-size:14px}
 .drop-line{font:400 clamp(17px,3.4vw,21px)/1.3 var(--serif)}
 .drop-line b{font-family:var(--mono); font-size:.86em; font-weight:600}
 .drop-sub{font-size:12.5px; color:var(--ink-3)}
+.dropzone.busy{cursor:progress; border-style:solid; border-color:var(--accent); background:var(--accent-soft)}
+.dropzone.busy .drop-line{animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
 
 .landing-alt{margin-top:14px; text-align:center}
 .paste-wrap{margin-top:18px; display:grid; gap:10px; justify-items:start}
@@ -129,6 +132,27 @@ select{padding:8px 9px; min-height:36px; max-width:100%; font-size:14px}
 .tab:hover{color:var(--ink)}
 .tab.active{color:var(--ink); border-bottom-color:var(--accent)}
 .panel{display:flex; flex-direction:column; gap:14px; min-width:0}
+
+/* ---------------- lembar kerja Excel ---------------- */
+.ws-bar{display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 20px}
+.ws-sheets{display:flex; align-items:center; gap:10px; min-width:0; flex:1 1 320px}
+.ws-label{flex:none; font:600 10.5px/1 var(--mono); letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3)}
+.ws-list{display:flex; gap:6px; overflow-x:auto; min-width:0; padding:2px; scrollbar-width:thin}
+.ws-tab{
+  flex:none; display:inline-flex; align-items:baseline; gap:8px; max-width:240px;
+  min-height:32px; padding:0 12px; cursor:pointer;
+  background:var(--card); color:var(--ink-2); border:1px solid var(--rule-dark); border-radius:3px;
+  font:500 13.5px/1 inherit; font-family:inherit; transition:background .12s,border-color .12s,color .12s;
+}
+.ws-tab b{font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.ws-tab small{font:11px/1 var(--mono); color:var(--ink-3)}
+.ws-tab:hover{background:var(--tint); color:var(--ink)}
+.ws-tab[aria-selected="true"]{background:var(--ink); border-color:var(--ink); color:var(--paper); cursor:default}
+.ws-tab[aria-selected="true"] small{color:#c9c3b4}
+.ws-tab:disabled{opacity:.45; cursor:not-allowed; background:var(--card)}
+.ws-tab .ws-hid{font-style:italic}
+.ws-head{display:flex; align-items:center; gap:10px; flex:0 1 auto; min-width:0}
+.ws-head select{max-width:300px; min-height:32px; padding:5px 8px; font-size:13.5px}
 
 /* ---------------- toolbar ---------------- */
 .toolbar{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
@@ -289,6 +313,9 @@ mark{background:#ffe9a8; color:inherit; padding:0 1px; border-radius:2px}
   .card-more{margin-top:10px; font:500 12px/1 inherit; color:var(--accent)}
   .filemeta strong{max-width:100%}
   .tabs{width:100%; gap:18px}
+  .ws-sheets{flex-basis:100%}
+  .ws-head{width:100%}
+  .ws-head select{flex:1 1 0; min-width:0; max-width:none}
   .sheet-panel{width:100%; border-left:0}
   .pager-btns{flex:1; display:grid; grid-template-columns:1fr 1fr}
   .pager{gap:10px}
