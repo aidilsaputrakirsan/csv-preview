@@ -192,7 +192,7 @@
     if (XLSX) return Promise.resolve(XLSX);
     return (xlsxLoading ||= new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'assets/vendor/xlsx.full.min.js';
+      s.src = 'assets/vendor/xlsx.full.min.js?v=__BUILD__';
       s.onload = () => { XLSX = window.XLSX; resolve(XLSX); };
       s.onerror = () => { xlsxLoading = null; s.remove(); reject(new Error('lib')); };
       document.head.appendChild(s);

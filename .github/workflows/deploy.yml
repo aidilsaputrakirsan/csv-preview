@@ -22,6 +22,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # Cache busting: Cloudflare menyimpan .js/.css di browser 4 jam. Ganti __BUILD__ dengan
+      # hash commit supaya tiap deploy URL aset berubah dan browser pasti mengambil versi baru.
+      - name: Stamp asset version
+        run: sed -i "s/__BUILD__/${GITHUB_SHA::8}/g" index.html assets/app.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
